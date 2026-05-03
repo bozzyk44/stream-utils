@@ -12,7 +12,9 @@ from stream_utils.core.ffmpeg import (
     SubtitleStyle,
     cut_vertical,
     ffmpeg_available,
+    segments_to_ass,
     segments_to_srt,
+    write_ass,
     write_srt,
 )
 from stream_utils.core.llm import LLM, CallResult, ModelPricing
@@ -51,8 +53,10 @@ __all__ = [
     "cut_vertical",
     "ffmpeg_available",
     "out_dir",
+    "segments_to_ass",
     "segments_to_srt",
     "transcribe",
+    "write_ass",
     "write_srt",
     "xdg_cache",
     "xdg_data",

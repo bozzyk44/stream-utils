@@ -115,6 +115,98 @@ def segments_to_srt(segments: list[Segment], *, time_offset: float = 0.0) -> str
     return "\n".join(lines)
 
 
+def _format_ass_time(seconds: float) -> str:
+    """ASS timestamp: H:MM:SS.cs (centiseconds). Negative seconds clamp to 0."""
+    if seconds < 0:
+        seconds = 0.0
+    total_cs = round(seconds * 100)
+    hours, rem_cs = divmod(total_cs, 3600 * 100)
+    minutes, rem_cs = divmod(rem_cs, 60 * 100)
+    secs, cs = divmod(rem_cs, 100)
+    return f"{hours:d}:{minutes:02d}:{secs:02d}.{cs:02d}"
+
+
+def segments_to_ass(
+    segments: list[Segment],
+    *,
+    time_offset: float = 0.0,
+    playres: tuple[int, int] = (1080, 1920),
+    style: SubtitleStyle | None = None,
+) -> str:
+    """Render segments as a complete ASS subtitle script with explicit
+    PlayResX / PlayResY in [Script Info].
+
+    ASS-with-explicit-PlayRes is the only reliable way to make libass
+    interpret ``MarginV`` in actual pixels — SRT inputs to the FFmpeg
+    ``subtitles`` filter use libass' default (~288 px tall) which puts
+    a ``MarginV=120`` block at ~42% from the bottom of a 1920-tall canvas
+    rather than near the bottom edge.
+    """
+    eff_style = style or SubtitleStyle()
+    play_w, play_h = playres
+    lines: list[str] = [
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        f"PlayResX: {play_w}",
+        f"PlayResY: {play_h}",
+        "ScaledBorderAndShadow: yes",
+        "WrapStyle: 0",
+        "",
+        "[V4+ Styles]",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, "
+        "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, "
+        "BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+        (
+            f"Style: Default,{eff_style.font_name},{eff_style.font_size},"
+            f"{eff_style.primary_color},{eff_style.outline_color},&H00000000,"
+            f"0,0,0,0,100,100,0,0,"
+            f"{eff_style.border_style},{eff_style.outline},{eff_style.shadow},"
+            f"{eff_style.alignment},40,40,{eff_style.margin_v},1"
+        ),
+        "",
+        "[Events]",
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ]
+    for s in segments:
+        text = s.text.strip()
+        if not text:
+            continue
+        start = s.start - time_offset
+        end = s.end - time_offset
+        if end <= start:
+            continue
+        # ASS uses \N for newlines; commas are fine in Text since position is fixed.
+        ass_text = text.replace("\n", "\\N")
+        lines.append(
+            f"Dialogue: 0,{_format_ass_time(start)},{_format_ass_time(end)},"
+            f"Default,,0,0,0,,{ass_text}"
+        )
+    return "\n".join(lines)
+
+
+def write_ass(
+    segments: list[Segment],
+    output_path: Path | str,
+    *,
+    time_offset: float = 0.0,
+    playres: tuple[int, int] = (1080, 1920),
+    style: SubtitleStyle | None = None,
+) -> Path:
+    """Write a complete ASS file at ``output_path`` (UTF-8).
+
+    Prefer this over :func:`write_srt` whenever you call
+    :func:`cut_vertical` (or otherwise feed libass) — see
+    :func:`segments_to_ass` for why.
+    """
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(
+        segments_to_ass(segments, time_offset=time_offset, playres=playres, style=style),
+        encoding="utf-8",
+    )
+    return out
+
+
 def write_srt(
     segments: list[Segment],
     output_path: Path | str,
@@ -277,6 +369,8 @@ __all__ = [
     "SubtitleStyle",
     "cut_vertical",
     "ffmpeg_available",
+    "segments_to_ass",
     "segments_to_srt",
+    "write_ass",
     "write_srt",
 ]
