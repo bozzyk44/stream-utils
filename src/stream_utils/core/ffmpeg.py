@@ -232,21 +232,17 @@ def cut_vertical(
 
     duration = end - start
     vf = _build_video_filter(target_w, target_h, subs, style, crop_focus_x)
-    # Two-pass seek: rough -ss before -i jumps to the nearest keyframe (fast),
-    # then -ss after -i decodes precisely to the requested start (accurate).
-    # Without the post -ss, the output may begin up to ~2s before `start`,
-    # causing subtitles to fire before speech.
-    pre_ss = max(0.0, start - 30.0)
-    post_ss = start - pre_ss
+    # Input-side -ss (before -i) is accurate by default in modern FFmpeg
+    # (4.x+) AND keeps the subtitles filter's PTS clock in sync — output-side
+    # -ss after -i was a dead end here: audio/video aligned, but libass
+    # ended up with no events visible at any output frame timestamp.
     cmd = [
         "ffmpeg",
         "-y" if overwrite else "-n",
         "-ss",
-        f"{pre_ss:.3f}",
+        f"{start:.3f}",
         "-i",
         str(src),
-        "-ss",
-        f"{post_ss:.3f}",
         "-t",
         f"{duration:.3f}",
         "-vf",
