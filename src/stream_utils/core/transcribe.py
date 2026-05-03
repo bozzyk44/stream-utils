@@ -44,8 +44,18 @@ _dll_dirs_registered = False
 
 
 def _register_nvidia_dll_dirs() -> None:
-    """On Windows, register ``site-packages/nvidia/*/bin`` paths with the
-    DLL loader so CTranslate2 finds cuBLAS / cuDNN from pip-installed wheels.
+    """On Windows, make CTranslate2's CUDA dependencies (cuBLAS / cuDNN /
+    cudart) loadable from pip-installed ``nvidia-*`` wheels.
+
+    Two-stage workaround for the fact that CTranslate2 calls LoadLibrary
+    lazily and doesn't honor ``os.add_dll_directory()`` for that path:
+
+    1. Register each ``site-packages/nvidia/*/bin`` directory with the
+       Python-level DLL loader (helps any later ``ctypes.CDLL`` calls).
+    2. **Eagerly load** the critical DLLs via ``ctypes.CDLL`` so they
+       sit in the process address space. Subsequent ``LoadLibrary`` calls
+       from native code return the already-loaded handle by name, no
+       search needed.
 
     No-op on non-Windows and after the first call.
     """
@@ -54,12 +64,14 @@ def _register_nvidia_dll_dirs() -> None:
         _dll_dirs_registered = True
         return
     log = logger.bind(module="stream_utils.transcribe")
-    # Walk site-packages for an nvidia parent dir; register any subdir with bin/.
+    import ctypes
     import site
 
     sp_dirs = list(site.getsitepackages())
     if hasattr(site, "getusersitepackages"):
         sp_dirs.append(site.getusersitepackages())
+
+    bin_dirs: list[Path] = []
     for sp in sp_dirs:
         nvidia_root = Path(sp) / "nvidia"
         if not nvidia_root.is_dir():
@@ -68,7 +80,17 @@ def _register_nvidia_dll_dirs() -> None:
             bin_dir = sub / "bin"
             if bin_dir.is_dir():
                 os.add_dll_directory(str(bin_dir))
+                bin_dirs.append(bin_dir)
                 log.debug(f"registered DLL dir: {bin_dir}")
+
+    # Pre-load critical DLLs by absolute path so CTranslate2's lazy
+    # LoadLibrary calls find them already in memory.
+    for bin_dir in bin_dirs:
+        for dll in bin_dir.glob("*.dll"):
+            try:
+                ctypes.CDLL(str(dll))
+            except OSError as e:
+                log.debug(f"pre-load skipped {dll.name}: {e}")
     _dll_dirs_registered = True
 
 
