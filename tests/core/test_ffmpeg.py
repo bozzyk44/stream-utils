@@ -129,8 +129,8 @@ def test_subtitle_style_override() -> None:
 
 def test_build_video_filter_no_subs() -> None:
     vf = _build_video_filter(1080, 1920, None, None)
-    # 9:16 aspect: width = ih * 9/16, x_offset = (iw - width)/2
-    assert "crop=floor(ih*1080/1920/2)*2:ih:(iw-floor(ih*1080/1920/2)*2)/2:0" in vf
+    # 9:16 aspect, default centered: x = (iw - crop_w) * 0.5
+    assert "crop=floor(ih*1080/1920/2)*2:ih:(iw-floor(ih*1080/1920/2)*2)*0.5000:0" in vf
     assert "scale=1080:1920:flags=lanczos" in vf
     assert "subtitles" not in vf
 
@@ -150,6 +150,56 @@ def test_build_video_filter_subs_no_style(tmp_path: Path) -> None:
     vf = _build_video_filter(1080, 1920, srt, None)
     assert "subtitles=" in vf
     assert "force_style=" not in vf
+
+
+def test_build_video_filter_crop_focus_left() -> None:
+    vf = _build_video_filter(1080, 1920, None, None, crop_focus_x=0.0)
+    assert "*0.0000:" in vf  # window's left edge at frame's left
+
+
+def test_build_video_filter_crop_focus_right() -> None:
+    vf = _build_video_filter(1080, 1920, None, None, crop_focus_x=1.0)
+    assert "*1.0000:" in vf  # window's right edge at frame's right
+
+
+def test_build_video_filter_crop_focus_vtube() -> None:
+    """0.7 puts the crop window 70% of the way to the right — typical VTube setup."""
+    vf = _build_video_filter(1080, 1920, None, None, crop_focus_x=0.7)
+    assert "*0.7000:" in vf
+
+
+def test_build_video_filter_crop_focus_out_of_range() -> None:
+    with pytest.raises(ValueError, match="crop_focus_x"):
+        _build_video_filter(1080, 1920, None, None, crop_focus_x=-0.1)
+    with pytest.raises(ValueError, match="crop_focus_x"):
+        _build_video_filter(1080, 1920, None, None, crop_focus_x=1.5)
+
+
+def test_build_video_filter_with_font_file(tmp_path: Path) -> None:
+    """When SubtitleStyle.font_file is set, the filter includes :fontsdir=."""
+    srt = tmp_path / "x.srt"
+    srt.write_text("dummy", encoding="utf-8")
+    fonts_dir = tmp_path / "fonts"
+    fonts_dir.mkdir()
+    font_file = fonts_dir / "MyFont.ttf"
+    font_file.write_bytes(b"")  # placeholder
+    style = SubtitleStyle(font_name="MyFont", font_file=font_file)
+    vf = _build_video_filter(1080, 1920, srt, style)
+    assert "fontsdir=" in vf
+    assert fonts_dir.as_posix().replace(":", r"\:") in vf
+    assert "FontName=MyFont" in vf
+
+
+def test_cut_vertical_rejects_missing_font(tmp_path: Path) -> None:
+    if not ffmpeg_available():
+        pytest.skip("ffmpeg not on PATH")
+    src = tmp_path / "fake.mp4"
+    src.write_bytes(b"fake")
+    style = SubtitleStyle(font_file=tmp_path / "nonexistent.ttf")
+    srt = tmp_path / "x.srt"
+    srt.write_text("dummy", encoding="utf-8")
+    with pytest.raises(FileNotFoundError, match="Font"):
+        cut_vertical(src, tmp_path / "out.mp4", 0, 1, subtitles_path=srt, style=style)
 
 
 def test_cut_vertical_rejects_negative_start(tmp_path: Path) -> None:

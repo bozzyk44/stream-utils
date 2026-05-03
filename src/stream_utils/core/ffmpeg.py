@@ -39,6 +39,12 @@ class SubtitleStyle:
 
     Colors are libass BBGGRR + ``&H...&`` wrapping. Ascending alignment values:
     1=bot-left, 2=bot-center, 3=bot-right, 5=top-left, etc.
+
+    ``font_file`` is optional: when set, the font is registered with libass
+    via the ``fontsdir`` filter parameter (the parent directory of the file).
+    Use this to bundle a custom font with a project rather than relying on
+    system-installed fonts. ``font_name`` must still match the font's internal
+    family name as set by the foundry (e.g. ``"Manrope ExtraBold"``).
     """
 
     font_name: str = "Inter"
@@ -50,6 +56,7 @@ class SubtitleStyle:
     border_style: int = 1
     alignment: int = 2
     margin_v: int = 120
+    font_file: Path | str | None = None
 
     def to_force_style(self) -> str:
         """Return the comma-separated ``force_style=`` value for libass."""
@@ -126,17 +133,25 @@ def _build_video_filter(
     target_height: int,
     subtitles_path: Path | None,
     style: SubtitleStyle | None,
+    crop_focus_x: float = 0.5,
 ) -> str:
     """Build the FFmpeg ``-vf`` filter chain for vertical-crop + optional subs.
 
-    Algorithm: pick a 9:16-shaped window centered horizontally on the source,
-    then scale to the target resolution. Aspect derived from
-    ``target_width / target_height`` so non-9:16 targets work too.
+    Algorithm: pick a 9:16-shaped window of the source's full height, position
+    it horizontally according to ``crop_focus_x`` (0.0 = left edge of the
+    window aligns with frame's left edge, 1.0 = right edge aligns with
+    frame's right edge, 0.5 = centered), then scale to the target resolution.
+    Aspect derived from ``target_width / target_height`` so non-9:16 targets
+    work too.
     """
+    if not 0.0 <= crop_focus_x <= 1.0:
+        raise ValueError(
+            f"crop_focus_x must be in [0.0, 1.0], got {crop_focus_x}"
+        )
     aspect_w = target_width
     aspect_h = target_height
     crop_w_expr = f"floor(ih*{aspect_w}/{aspect_h}/2)*2"
-    crop_x_expr = f"(iw-{crop_w_expr})/2"
+    crop_x_expr = f"(iw-{crop_w_expr})*{crop_focus_x:.4f}"
     crop = f"crop={crop_w_expr}:ih:{crop_x_expr}:0"
     scale = f"scale={target_width}:{target_height}:flags=lanczos"
     chain = [crop, scale]
@@ -145,10 +160,13 @@ def _build_video_filter(
         # We pass the full posix-style path, then escape the colon for FFmpeg
         # filter syntax (Windows drive letters → "X\\:/...").
         ass_path = subtitles_path.as_posix().replace(":", r"\:")
+        sub_filter = f"subtitles='{ass_path}'"
+        if style is not None and style.font_file is not None:
+            fontsdir = Path(style.font_file).parent.as_posix().replace(":", r"\:")
+            sub_filter += f":fontsdir='{fontsdir}'"
         if style is not None:
-            chain.append(f"subtitles='{ass_path}':force_style='{style.to_force_style()}'")
-        else:
-            chain.append(f"subtitles='{ass_path}'")
+            sub_filter += f":force_style='{style.to_force_style()}'"
+        chain.append(sub_filter)
     return ",".join(chain)
 
 
@@ -161,12 +179,18 @@ def cut_vertical(
     subtitles_path: Path | str | None = None,
     style: SubtitleStyle | None = None,
     target_resolution: tuple[int, int] = (1080, 1920),
+    crop_focus_x: float = 0.5,
     audio_bitrate: str = "128k",
     video_crf: int = 23,
     overwrite: bool = True,
 ) -> Path:
-    """Cut ``[start, end]`` from ``input_path``, center-crop 9:16, optionally
+    """Cut ``[start, end]`` from ``input_path``, vertical-crop, optionally
     burn subtitles, write to ``output_path``.
+
+    ``crop_focus_x`` controls horizontal positioning of the crop window:
+    0.0 = left-aligned, 0.5 = centered (default), 1.0 = right-aligned.
+    Use ~0.7-0.8 for a VTube streamer whose model lives in the right portion
+    of the frame.
 
     Re-encodes the segment (no stream copy) — required for the crop and
     subtitle burn-in. Uses libx264 + AAC, which are universally compatible
@@ -192,8 +216,13 @@ def cut_vertical(
     if subs is not None and not subs.is_file():
         raise FileNotFoundError(f"Subtitles file not found: {subs}")
 
+    if style is not None and style.font_file is not None:
+        font_path = Path(style.font_file)
+        if not font_path.is_file():
+            raise FileNotFoundError(f"Font file not found: {font_path}")
+
     duration = end - start
-    vf = _build_video_filter(target_w, target_h, subs, style)
+    vf = _build_video_filter(target_w, target_h, subs, style, crop_focus_x)
     cmd = [
         "ffmpeg",
         "-y" if overwrite else "-n",

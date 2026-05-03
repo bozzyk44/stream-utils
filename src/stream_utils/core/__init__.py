@@ -17,7 +17,7 @@ from stream_utils.core.ffmpeg import (
 )
 from stream_utils.core.llm import LLM, CallResult, ModelPricing
 from stream_utils.core.paths import out_dir, xdg_cache, xdg_data, xdg_state
-from stream_utils.core.transcribe import Segment, transcribe
+from stream_utils.core.transcribe import Segment, Word, transcribe
 from stream_utils.core.twitch import (
     HelixClient,
     TwitchAPIError,
@@ -47,6 +47,7 @@ __all__ = [
     "TwitchStream",
     "TwitchUser",
     "TwitchVideo",
+    "Word",
     "cut_vertical",
     "ffmpeg_available",
     "out_dir",

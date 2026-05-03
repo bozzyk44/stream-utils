@@ -17,7 +17,7 @@ import os
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
@@ -28,12 +28,28 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
-class Segment:
-    """One contiguous transcribed chunk: start/end seconds, stripped text."""
+class Word:
+    """One word with its alignment, populated when ``word_timestamps=True``."""
 
     start: float
     end: float
     text: str
+    probability: float = 1.0
+
+
+@dataclass(frozen=True)
+class Segment:
+    """One contiguous transcribed chunk.
+
+    ``words`` is a tuple (frozen) of per-word alignment data when
+    :func:`transcribe` was called with ``word_timestamps=True``; otherwise
+    empty.
+    """
+
+    start: float
+    end: float
+    text: str
+    words: tuple[Word, ...] = ()
 
 
 # Process-level memoization. Whisper models are heavy — loading them each
@@ -125,10 +141,13 @@ def cache_key(
     model_size: str,
     language: str | None,
     vad_filter: bool,
+    word_timestamps: bool = False,
 ) -> str:
     """Deterministic cache key. Changes to any input invalidate the entry."""
     file_hash = _file_sha256(Path(audio_path))
-    return f"{file_hash}|{model_size}|{language}|vad={vad_filter}"
+    return (
+        f"{file_hash}|{model_size}|{language}|vad={vad_filter}|words={word_timestamps}"
+    )
 
 
 def transcribe(
@@ -140,6 +159,7 @@ def transcribe(
     compute_type: str = "default",
     vad_filter: bool = True,
     beam_size: int = 5,
+    word_timestamps: bool = False,
     cache: Cache | None = None,
     cache_namespace: str = "transcribe",
 ) -> list[Segment]:
@@ -147,6 +167,10 @@ def transcribe(
 
     Defaults match the streamer-tooling consumers' needs: Russian language,
     large-v3 model, voice-activity filter on. Override per call.
+
+    Set ``word_timestamps=True`` to populate :attr:`Segment.words` with
+    per-word alignment (slower by ~30-50%, but needed for short-form
+    subtitle resplitting where you cut a long segment into 5-7-word chunks).
 
     If ``cache`` is given, results are stored keyed by file-content hash plus
     settings — re-running with the same inputs is a no-op disk read.
@@ -156,10 +180,10 @@ def transcribe(
         raise FileNotFoundError(f"Audio file not found: {path}")
 
     if cache is not None:
-        key = cache_key(path, model_size, language, vad_filter)
+        key = cache_key(path, model_size, language, vad_filter, word_timestamps)
         cached = cache.get(cache_namespace, key)
         if cached is not None:
-            return [Segment(**s) for s in cached]
+            return [_segment_from_dict(s) for s in cached]
 
     model = _load_model(model_size, device, compute_type)
     segments_iter, _info = model.transcribe(
@@ -167,20 +191,65 @@ def transcribe(
         language=language,
         beam_size=beam_size,
         vad_filter=vad_filter,
+        word_timestamps=word_timestamps,
     )
-    segments = [
-        Segment(start=float(s.start), end=float(s.end), text=s.text.strip())
-        for s in segments_iter
-    ]
+    segments: list[Segment] = []
+    for s in segments_iter:
+        words: tuple[Word, ...] = ()
+        if word_timestamps and getattr(s, "words", None):
+            words = tuple(
+                Word(
+                    start=float(w.start),
+                    end=float(w.end),
+                    text=str(w.word).strip(),
+                    probability=float(getattr(w, "probability", 1.0) or 1.0),
+                )
+                for w in s.words
+            )
+        segments.append(
+            Segment(
+                start=float(s.start),
+                end=float(s.end),
+                text=s.text.strip(),
+                words=words,
+            )
+        )
 
     if cache is not None:
         cache.set(
             cache_namespace,
-            cache_key(path, model_size, language, vad_filter),
-            [asdict(s) for s in segments],
+            cache_key(path, model_size, language, vad_filter, word_timestamps),
+            [_segment_to_dict(s) for s in segments],
         )
 
     return segments
+
+
+def _segment_to_dict(s: Segment) -> dict[str, Any]:
+    """Serialize a Segment to a JSON-compatible dict (cache layer)."""
+    d: dict[str, Any] = asdict(s)
+    # asdict already converts the words tuple → list of dicts
+    return d
+
+
+def _segment_from_dict(d: dict[str, Any]) -> Segment:
+    """Deserialize a Segment from cache. Handles legacy entries lacking words."""
+    raw_words = d.get("words") or ()
+    words = tuple(
+        Word(
+            start=float(w["start"]),
+            end=float(w["end"]),
+            text=str(w["text"]),
+            probability=float(w.get("probability", 1.0)),
+        )
+        for w in raw_words
+    )
+    return Segment(
+        start=float(d["start"]),
+        end=float(d["end"]),
+        text=str(d["text"]),
+        words=words,
+    )
 
 
 def clear_model_cache() -> None:
@@ -188,4 +257,4 @@ def clear_model_cache() -> None:
     _loaded_models.clear()
 
 
-__all__ = ["Segment", "cache_key", "clear_model_cache", "transcribe"]
+__all__ = ["Segment", "Word", "cache_key", "clear_model_cache", "transcribe"]

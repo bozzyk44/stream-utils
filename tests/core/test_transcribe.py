@@ -27,6 +27,61 @@ def test_segment_frozen() -> None:
         s.text = "ho"  # type: ignore[misc]
 
 
+def test_segment_words_default_empty() -> None:
+    """Without word_timestamps the Segment.words tuple is empty."""
+    s = Segment(start=0.0, end=1.0, text="hi")
+    assert s.words == ()
+
+
+def test_word_dataclass_frozen() -> None:
+    from stream_utils import Word
+
+    w = Word(start=0.0, end=0.5, text="привет", probability=0.95)
+    with pytest.raises(FrozenInstanceError):
+        w.text = "пока"  # type: ignore[misc]
+
+
+def test_segment_with_words_roundtrip() -> None:
+    """A Segment with populated words preserves them via tuple equality."""
+    from stream_utils import Word
+
+    w1 = Word(start=0.0, end=0.5, text="hi", probability=0.99)
+    w2 = Word(start=0.6, end=1.0, text="there", probability=0.97)
+    s = Segment(start=0.0, end=1.0, text="hi there", words=(w1, w2))
+    assert len(s.words) == 2
+    assert s.words[0].text == "hi"
+    assert s.words[1].probability == pytest.approx(0.97)
+
+
+def test_cache_key_word_timestamps_invalidates(tmp_path: Path) -> None:
+    f = _write_audio(tmp_path / "a.mp4", b"hello")
+    a = cache_key(f, "large-v3", "ru", True, word_timestamps=False)
+    b = cache_key(f, "large-v3", "ru", True, word_timestamps=True)
+    assert a != b
+
+
+def test_segment_serialization_roundtrip_with_words() -> None:
+    """Cache layer must round-trip a Segment with Words intact."""
+    from stream_utils import Word
+    from stream_utils.core.transcribe import _segment_from_dict, _segment_to_dict
+
+    w = Word(start=0.0, end=0.5, text="hi", probability=0.9)
+    s = Segment(start=0.0, end=1.0, text="hi", words=(w,))
+    d = _segment_to_dict(s)
+    s2 = _segment_from_dict(d)
+    assert s2 == s
+
+
+def test_segment_deserialization_legacy_no_words() -> None:
+    """Cache entries written before v0.6 lack the words field — must still load."""
+    from stream_utils.core.transcribe import _segment_from_dict
+
+    legacy = {"start": 0.0, "end": 1.0, "text": "hi"}
+    s = _segment_from_dict(legacy)
+    assert s.words == ()
+    assert s.text == "hi"
+
+
 def test_cache_key_deterministic(tmp_path: Path) -> None:
     f = _write_audio(tmp_path / "a.mp4", b"hello world")
     k1 = cache_key(f, "large-v3", "ru", True)
