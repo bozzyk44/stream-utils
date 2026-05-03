@@ -44,12 +44,20 @@ class Segment:
     ``words`` is a tuple (frozen) of per-word alignment data when
     :func:`transcribe` was called with ``word_timestamps=True``; otherwise
     empty.
+
+    ``avg_logprob`` and ``no_speech_prob`` come straight from faster-whisper.
+    Higher (closer to 0) avg_logprob = more confident transcription;
+    no_speech_prob near 1.0 means the model thinks this region was silence
+    or noise. Both default to 0.0 for legacy cache entries written before
+    these fields existed.
     """
 
     start: float
     end: float
     text: str
     words: tuple[Word, ...] = ()
+    avg_logprob: float = 0.0
+    no_speech_prob: float = 0.0
 
 
 # Process-level memoization. Whisper models are heavy — loading them each
@@ -212,6 +220,8 @@ def transcribe(
                 end=float(s.end),
                 text=s.text.strip(),
                 words=words,
+                avg_logprob=float(getattr(s, "avg_logprob", 0.0) or 0.0),
+                no_speech_prob=float(getattr(s, "no_speech_prob", 0.0) or 0.0),
             )
         )
 
@@ -233,7 +243,8 @@ def _segment_to_dict(s: Segment) -> dict[str, Any]:
 
 
 def _segment_from_dict(d: dict[str, Any]) -> Segment:
-    """Deserialize a Segment from cache. Handles legacy entries lacking words."""
+    """Deserialize a Segment from cache. Handles legacy entries lacking
+    newer fields (words, avg_logprob, no_speech_prob)."""
     raw_words = d.get("words") or ()
     words = tuple(
         Word(
@@ -249,6 +260,8 @@ def _segment_from_dict(d: dict[str, Any]) -> Segment:
         end=float(d["end"]),
         text=str(d["text"]),
         words=words,
+        avg_logprob=float(d.get("avg_logprob", 0.0)),
+        no_speech_prob=float(d.get("no_speech_prob", 0.0)),
     )
 
 
