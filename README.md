@@ -1,24 +1,24 @@
 # stream-utils
 
-Shared helpers for a small constellation of personal streamer-tooling projects.
+Shared-библиотека общих хелперов для серии личных стример-инструментов.
 
-This is a **library**, not a CLI tool. It wraps the parts that hurt to copy-paste across multiple sibling projects: Twitch Helix client, LLM cost tracking, faster-whisper, FFmpeg vertical-crop, Twitch IRC daemon, Telegram delivery, nickname matcher, SQLite KV cache.
+Это **library**, а не CLI. Заворачивает то, что больно копипастить между несколькими sibling-проектами: Twitch Helix-клиент, LLM-обёртка с трекингом расхода, faster-whisper, FFmpeg vertical-crop, Twitch IRC daemon, Telegram delivery, nickname matcher, SQLite KV cache.
 
-See `CLAUDE.md` for the full design contract.
+Полный архитектурный контракт — в [`CLAUDE.md`](CLAUDE.md).
 
-## Install
+## Установка
 
 ```bash
 pip install git+https://github.com/bozzyk44/stream-utils.git@v0.1.0
 ```
 
-Or pin to a specific commit pre-1.0:
+Или пин на конкретный коммит (pre-1.0):
 
 ```bash
 pip install git+https://github.com/bozzyk44/stream-utils.git@<sha>
 ```
 
-In a consumer's `pyproject.toml`:
+В `pyproject.toml` потребителя:
 
 ```toml
 dependencies = [
@@ -26,59 +26,61 @@ dependencies = [
 ]
 ```
 
-## Usage
+## Использование
 
 ```python
 from pathlib import Path
 
 from stream_utils import Cache, out_dir
 
-# Date-keyed output directory: <project_root>/out/<YYYY-MM-DD>/
+# Каталог под выходные данные с датой: <project_root>/out/<YYYY-MM-DD>/
 day_out = out_dir(Path.cwd())
 
-# JSON-serialized SQLite KV with optional TTL
+# JSON-сериализованный SQLite KV с опциональным TTL
 cache = Cache(Path.cwd() / "cache.db")
 cache.set("twitch.users", "broadcaster_42", {"login": "..."}, ttl_seconds=3600)
 user = cache.get("twitch.users", "broadcaster_42")
 ```
 
-The full public API surfaces from `stream_utils` directly:
+Полный публичный API доступен напрямую из `stream_utils`:
 
 ```python
 from stream_utils import (
     Cache,
+    LLM, CallResult, ModelPricing,
+    HelixClient, TwitchUser, TwitchVideo, TwitchStream, TwitchChannel, TwitchClip,
+    Segment, Word, transcribe,
+    SubtitleStyle, cut_vertical, segments_to_srt, write_srt, ffmpeg_available,
     out_dir, xdg_data, xdg_state, xdg_cache,
-    StreamUtilsError, BudgetExceeded, ConfigError, CacheError,
+    StreamUtilsError, BudgetExceeded, ConfigError, CacheError, FFmpegError, TwitchAPIError,
 )
 ```
 
-Phase 1 modules (`HelixClient`, `LLM`, `transcribe`, FFmpeg helpers) land as the first consumer (`shorts-from-stream`) drives them into existence.
-
-## Develop
+## Разработка
 
 ```bash
-# Set up a venv and install dev deps
+# Создать venv и поставить dev-зависимости
 python -m venv .venv
 .venv\Scripts\activate              # Windows PowerShell
 pip install -e ".[dev]" || pip install -e . && pip install pytest ruff mypy
 
-# Run tests
+# Тесты
 pytest
 
-# Type-check core
+# Type-check core/
 mypy
 
 # Lint
 ruff check .
 ```
 
-If you have `uv` installed, the equivalent is:
+Если установлен `uv`, эквивалент:
 
 ```bash
 uv sync
 uv run pytest
 ```
 
-## License
+## Лицензия
 
-MIT — see `LICENSE`.
+MIT — см. [`LICENSE`](LICENSE).
