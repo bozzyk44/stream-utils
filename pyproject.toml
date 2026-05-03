@@ -14,6 +14,7 @@ dependencies = [
     "platformdirs>=4.3",
     "loguru>=0.7",
     "openai>=1.50",
+    "anthropic>=0.40",
     "faster-whisper>=1.0",
     "ffmpeg-python>=0.2",
     "twitchio>=2.10",

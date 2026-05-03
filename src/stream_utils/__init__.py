@@ -7,15 +7,19 @@ from stream_utils.core.errors import (
     ConfigError,
     StreamUtilsError,
 )
+from stream_utils.core.llm import LLM, CallResult, ModelPricing
 from stream_utils.core.paths import out_dir, xdg_cache, xdg_data, xdg_state
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
+    "LLM",
     "BudgetExceeded",
     "Cache",
     "CacheError",
+    "CallResult",
     "ConfigError",
+    "ModelPricing",
     "StreamUtilsError",
     "__version__",
     "out_dir",
