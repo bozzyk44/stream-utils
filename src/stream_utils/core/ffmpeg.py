@@ -134,6 +134,7 @@ def _build_video_filter(
     subtitles_path: Path | None,
     style: SubtitleStyle | None,
     crop_focus_x: float = 0.5,
+    original_size: tuple[int, int] | None = None,
 ) -> str:
     """Build the FFmpeg ``-vf`` filter chain for vertical-crop + optional subs.
 
@@ -161,6 +162,14 @@ def _build_video_filter(
         # filter syntax (Windows drive letters → "X\\:/...").
         ass_path = subtitles_path.as_posix().replace(":", r"\:")
         sub_filter = f"subtitles='{ass_path}'"
+        # original_size tells libass what canvas the .ass was authored for —
+        # critical when the source has been cropped/resized. Without it,
+        # libass uses default PlayRes (~288px tall) and FontSize/MarginV
+        # render scaled-up: 28px font becomes 187px in 1080x1920 output,
+        # 120 MarginV becomes 42% from bottom (i.e. middle of screen).
+        if original_size is None:
+            original_size = (target_width, target_height)
+        sub_filter += f":original_size={original_size[0]}x{original_size[1]}"
         if style is not None and style.font_file is not None:
             fontsdir = Path(style.font_file).parent.as_posix().replace(":", r"\:")
             sub_filter += f":fontsdir='{fontsdir}'"
@@ -223,13 +232,21 @@ def cut_vertical(
 
     duration = end - start
     vf = _build_video_filter(target_w, target_h, subs, style, crop_focus_x)
+    # Two-pass seek: rough -ss before -i jumps to the nearest keyframe (fast),
+    # then -ss after -i decodes precisely to the requested start (accurate).
+    # Without the post -ss, the output may begin up to ~2s before `start`,
+    # causing subtitles to fire before speech.
+    pre_ss = max(0.0, start - 30.0)
+    post_ss = start - pre_ss
     cmd = [
         "ffmpeg",
         "-y" if overwrite else "-n",
         "-ss",
-        f"{start:.3f}",
+        f"{pre_ss:.3f}",
         "-i",
         str(src),
+        "-ss",
+        f"{post_ss:.3f}",
         "-t",
         f"{duration:.3f}",
         "-vf",

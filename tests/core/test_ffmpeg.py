@@ -135,6 +135,24 @@ def test_build_video_filter_no_subs() -> None:
     assert "subtitles" not in vf
 
 
+def test_build_video_filter_default_original_size(tmp_path: Path) -> None:
+    """When subs are present and original_size omitted, defaults to target dims."""
+    srt = tmp_path / "x.srt"
+    srt.write_text("dummy", encoding="utf-8")
+    vf = _build_video_filter(1080, 1920, srt, SubtitleStyle())
+    assert "original_size=1080x1920" in vf
+
+
+def test_build_video_filter_explicit_original_size(tmp_path: Path) -> None:
+    """Source dims can override original_size — useful for non-cropped renders."""
+    srt = tmp_path / "x.srt"
+    srt.write_text("dummy", encoding="utf-8")
+    vf = _build_video_filter(
+        1280, 720, srt, SubtitleStyle(), original_size=(1920, 1080)
+    )
+    assert "original_size=1920x1080" in vf
+
+
 def test_build_video_filter_with_subs(tmp_path: Path) -> None:
     srt = tmp_path / "x.srt"
     srt.write_text("dummy", encoding="utf-8")
