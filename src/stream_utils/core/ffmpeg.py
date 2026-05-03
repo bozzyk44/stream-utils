@@ -56,6 +56,7 @@ class SubtitleStyle:
     border_style: int = 1
     alignment: int = 2
     margin_v: int = 120
+    bold: bool = False
     font_file: Path | str | None = None
 
     def to_force_style(self) -> str:
@@ -70,6 +71,7 @@ class SubtitleStyle:
             f"BorderStyle={self.border_style}",
             f"Alignment={self.alignment}",
             f"MarginV={self.margin_v}",
+            f"Bold={-1 if self.bold else 0}",
         ]
         return ",".join(parts)
 
@@ -159,7 +161,7 @@ def segments_to_ass(
         (
             f"Style: Default,{eff_style.font_name},{eff_style.font_size},"
             f"{eff_style.primary_color},{eff_style.outline_color},&H00000000,"
-            f"0,0,0,0,100,100,0,0,"
+            f"{-1 if eff_style.bold else 0},0,0,0,100,100,0,0,"
             f"{eff_style.border_style},{eff_style.outline},{eff_style.shadow},"
             f"{eff_style.alignment},40,40,{eff_style.margin_v},1"
         ),
