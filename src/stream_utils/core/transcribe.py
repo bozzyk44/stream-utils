@@ -13,6 +13,8 @@ language settings, so changes to either invalidate the cache.
 from __future__ import annotations
 
 import hashlib
+import os
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -38,11 +40,42 @@ class Segment:
 # call would dominate runtime. Multiple consumers in the same process with
 # the same parameters share a model instance.
 _loaded_models: dict[tuple[str, str, str], WhisperModel] = {}
+_dll_dirs_registered = False
+
+
+def _register_nvidia_dll_dirs() -> None:
+    """On Windows, register ``site-packages/nvidia/*/bin`` paths with the
+    DLL loader so CTranslate2 finds cuBLAS / cuDNN from pip-installed wheels.
+
+    No-op on non-Windows and after the first call.
+    """
+    global _dll_dirs_registered
+    if _dll_dirs_registered or sys.platform != "win32":
+        _dll_dirs_registered = True
+        return
+    log = logger.bind(module="stream_utils.transcribe")
+    # Walk site-packages for an nvidia parent dir; register any subdir with bin/.
+    import site
+
+    sp_dirs = list(site.getsitepackages())
+    if hasattr(site, "getusersitepackages"):
+        sp_dirs.append(site.getusersitepackages())
+    for sp in sp_dirs:
+        nvidia_root = Path(sp) / "nvidia"
+        if not nvidia_root.is_dir():
+            continue
+        for sub in nvidia_root.iterdir():
+            bin_dir = sub / "bin"
+            if bin_dir.is_dir():
+                os.add_dll_directory(str(bin_dir))
+                log.debug(f"registered DLL dir: {bin_dir}")
+    _dll_dirs_registered = True
 
 
 def _load_model(model_size: str, device: str, compute_type: str) -> WhisperModel:
     key = (model_size, device, compute_type)
     if key not in _loaded_models:
+        _register_nvidia_dll_dirs()
         from faster_whisper import WhisperModel
 
         log = logger.bind(module="stream_utils.transcribe")
