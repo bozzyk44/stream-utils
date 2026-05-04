@@ -150,11 +150,19 @@ def cache_key(
     language: str | None,
     vad_filter: bool,
     word_timestamps: bool = False,
+    batched: bool = False,
 ) -> str:
-    """Deterministic cache key. Changes to any input invalidate the entry."""
+    """Deterministic cache key. Changes to any input invalidate the entry.
+
+    ``batched`` is included because BatchedInferencePipeline chunks audio via
+    its own internal VAD before parallel inference, which can produce slightly
+    different segment boundaries than the vanilla model.transcribe() path.
+    Output text is functionally identical (no measurable WER difference) but
+    not byte-identical, so we don't share cached transcripts across modes."""
     file_hash = _file_sha256(Path(audio_path))
     return (
-        f"{file_hash}|{model_size}|{language}|vad={vad_filter}|words={word_timestamps}"
+        f"{file_hash}|{model_size}|{language}|vad={vad_filter}"
+        f"|words={word_timestamps}|batched={batched}"
     )
 
 
@@ -168,6 +176,8 @@ def transcribe(
     vad_filter: bool = True,
     beam_size: int = 5,
     word_timestamps: bool = False,
+    batched: bool = True,
+    batch_size: int = 4,
     cache: Cache | None = None,
     cache_namespace: str = "transcribe",
 ) -> list[Segment]:
@@ -177,30 +187,57 @@ def transcribe(
     large-v3 model, voice-activity filter on. Override per call.
 
     Set ``word_timestamps=True`` to populate :attr:`Segment.words` with
-    per-word alignment (slower by ~30-50%, but needed for short-form
-    subtitle resplitting where you cut a long segment into 5-7-word chunks).
+    per-word alignment (slower by ~30-50% in vanilla mode, much smaller hit
+    in batched mode). Needed for short-form subtitle resplitting.
+
+    ``batched=True`` (default) routes through :class:`BatchedInferencePipeline`
+    — faster-whisper's parallel-VAD-chunk pipeline. Typical speedup is 3-5x
+    on long audio (10+ min); negligible on clip-length audio (<1 min).
+    Output text is functionally identical to vanilla (same WER); segment
+    boundaries can differ by tens of milliseconds because batched mode chunks
+    via its own internal VAD. Set ``batched=False`` to fall back to the
+    sequential ``model.transcribe()`` path.
+
+    ``batch_size`` only matters when ``batched=True``. VRAM usage grows
+    roughly linearly with batch_size; default 4 fits ``large-v3`` fp16 in
+    ~7 GB on an 8 GB GPU. Bump to 8-16 on bigger cards. Drop to 2 if OOM.
 
     If ``cache`` is given, results are stored keyed by file-content hash plus
     settings — re-running with the same inputs is a no-op disk read.
     """
+    from faster_whisper import BatchedInferencePipeline
+
     path = Path(audio_path)
     if not path.is_file():
         raise FileNotFoundError(f"Audio file not found: {path}")
 
     if cache is not None:
-        key = cache_key(path, model_size, language, vad_filter, word_timestamps)
+        key = cache_key(
+            path, model_size, language, vad_filter, word_timestamps, batched=batched,
+        )
         cached = cache.get(cache_namespace, key)
         if cached is not None:
             return [_segment_from_dict(s) for s in cached]
 
     model = _load_model(model_size, device, compute_type)
-    segments_iter, _info = model.transcribe(
-        str(path),
-        language=language,
-        beam_size=beam_size,
-        vad_filter=vad_filter,
-        word_timestamps=word_timestamps,
-    )
+    if batched:
+        pipeline = BatchedInferencePipeline(model)
+        segments_iter, _info = pipeline.transcribe(
+            str(path),
+            language=language,
+            beam_size=beam_size,
+            vad_filter=vad_filter,
+            word_timestamps=word_timestamps,
+            batch_size=batch_size,
+        )
+    else:
+        segments_iter, _info = model.transcribe(
+            str(path),
+            language=language,
+            beam_size=beam_size,
+            vad_filter=vad_filter,
+            word_timestamps=word_timestamps,
+        )
     segments: list[Segment] = []
     for s in segments_iter:
         words: tuple[Word, ...] = ()
@@ -228,7 +265,9 @@ def transcribe(
     if cache is not None:
         cache.set(
             cache_namespace,
-            cache_key(path, model_size, language, vad_filter, word_timestamps),
+            cache_key(
+                path, model_size, language, vad_filter, word_timestamps, batched=batched,
+            ),
             [_segment_to_dict(s) for s in segments],
         )
 
