@@ -222,6 +222,31 @@ def write_srt(
     return out
 
 
+def _subtitles_filter(
+    subtitles_path: Path,
+    *,
+    style: SubtitleStyle | None,
+    original_size: tuple[int, int],
+) -> str:
+    """Build a single ``subtitles=...`` libass filter expression."""
+    # libass needs forward slashes and no drive-letter colon escaping issues.
+    # Pass the full posix-style path, then escape the colon for FFmpeg
+    # filter syntax (Windows drive letters → "X\\:/...").
+    ass_path = subtitles_path.as_posix().replace(":", r"\:")
+    expr = f"subtitles='{ass_path}'"
+    # original_size tells libass what canvas the .ass was authored for —
+    # critical when the source has been cropped/resized. Without it,
+    # libass uses default PlayRes (~288px tall) and FontSize/MarginV
+    # render scaled-up.
+    expr += f":original_size={original_size[0]}x{original_size[1]}"
+    if style is not None and style.font_file is not None:
+        fontsdir = Path(style.font_file).parent.as_posix().replace(":", r"\:")
+        expr += f":fontsdir='{fontsdir}'"
+    if style is not None:
+        expr += f":force_style='{style.to_force_style()}'"
+    return expr
+
+
 def _build_video_filter(
     target_width: int,
     target_height: int,
@@ -229,6 +254,7 @@ def _build_video_filter(
     style: SubtitleStyle | None,
     crop_focus_x: float = 0.5,
     original_size: tuple[int, int] | None = None,
+    extra_subtitles_path: Path | None = None,
 ) -> str:
     """Build the FFmpeg ``-vf`` filter chain for vertical-crop + optional subs.
 
@@ -238,6 +264,13 @@ def _build_video_filter(
     frame's right edge, 0.5 = centered), then scale to the target resolution.
     Aspect derived from ``target_width / target_height`` so non-9:16 targets
     work too.
+
+    ``extra_subtitles_path`` adds a *second* libass pass on top of the
+    primary subs. Use case: a chat-overlay ASS authored against the output
+    canvas (target dims) layered on top of speech subs. The second filter
+    inherits ``original_size`` from target dims, since chat overlays are
+    authored against the rendered canvas, not the source video. ``style``
+    only applies to the primary subs.
     """
     if not 0.0 <= crop_focus_x <= 1.0:
         raise ValueError(
@@ -250,26 +283,21 @@ def _build_video_filter(
     crop = f"crop={crop_w_expr}:ih:{crop_x_expr}:0"
     scale = f"scale={target_width}:{target_height}:flags=lanczos"
     chain = [crop, scale]
+    if original_size is None:
+        original_size = (target_width, target_height)
     if subtitles_path is not None:
-        # libass needs forward slashes and no drive-letter colon escaping issues.
-        # We pass the full posix-style path, then escape the colon for FFmpeg
-        # filter syntax (Windows drive letters → "X\\:/...").
-        ass_path = subtitles_path.as_posix().replace(":", r"\:")
-        sub_filter = f"subtitles='{ass_path}'"
-        # original_size tells libass what canvas the .ass was authored for —
-        # critical when the source has been cropped/resized. Without it,
-        # libass uses default PlayRes (~288px tall) and FontSize/MarginV
-        # render scaled-up: 28px font becomes 187px in 1080x1920 output,
-        # 120 MarginV becomes 42% from bottom (i.e. middle of screen).
-        if original_size is None:
-            original_size = (target_width, target_height)
-        sub_filter += f":original_size={original_size[0]}x{original_size[1]}"
-        if style is not None and style.font_file is not None:
-            fontsdir = Path(style.font_file).parent.as_posix().replace(":", r"\:")
-            sub_filter += f":fontsdir='{fontsdir}'"
-        if style is not None:
-            sub_filter += f":force_style='{style.to_force_style()}'"
-        chain.append(sub_filter)
+        chain.append(_subtitles_filter(subtitles_path, style=style, original_size=original_size))
+    if extra_subtitles_path is not None:
+        # Extra layer (chat overlay) is authored against the target canvas,
+        # not the source — pass target dims as original_size and no force_style
+        # (the .ass carries its own [V4+ Styles] block).
+        chain.append(
+            _subtitles_filter(
+                extra_subtitles_path,
+                style=None,
+                original_size=(target_width, target_height),
+            )
+        )
     return ",".join(chain)
 
 
@@ -281,6 +309,7 @@ def cut_vertical(
     *,
     subtitles_path: Path | str | None = None,
     style: SubtitleStyle | None = None,
+    extra_subtitles_path: Path | str | None = None,
     target_resolution: tuple[int, int] = (1080, 1920),
     crop_focus_x: float = 0.5,
     audio_bitrate: str = "128k",
@@ -318,6 +347,9 @@ def cut_vertical(
     subs = Path(subtitles_path) if subtitles_path is not None else None
     if subs is not None and not subs.is_file():
         raise FileNotFoundError(f"Subtitles file not found: {subs}")
+    extra_subs = Path(extra_subtitles_path) if extra_subtitles_path is not None else None
+    if extra_subs is not None and not extra_subs.is_file():
+        raise FileNotFoundError(f"Extra subtitles file not found: {extra_subs}")
 
     if style is not None and style.font_file is not None:
         font_path = Path(style.font_file)
@@ -325,7 +357,10 @@ def cut_vertical(
             raise FileNotFoundError(f"Font file not found: {font_path}")
 
     duration = end - start
-    vf = _build_video_filter(target_w, target_h, subs, style, crop_focus_x)
+    vf = _build_video_filter(
+        target_w, target_h, subs, style, crop_focus_x,
+        extra_subtitles_path=extra_subs,
+    )
     # Input-side -ss (before -i) is accurate by default in modern FFmpeg
     # (4.x+) AND keeps the subtitles filter's PTS clock in sync — output-side
     # -ss after -i was a dead end here: audio/video aligned, but libass
